@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 
 use strict;                      # keep us honest
-use Util;                        # command line parsing
+use Getopt::Long;                 # command line parsing
 use List::MoreUtils qw(uniq);    # scalar context, returns number of unique elements in list
 
 my $answers    = []; # all possible answers
@@ -19,8 +19,8 @@ use vars qw(
              $opt_debug
           );
 
-&Util::parse_opts("debug|d",    # enable debug messages
-                  "solve|s",    # solve
+GetOptions ("debug|d",    # enable debug messages
+	    "solve|s",    # solve
                  );
 
 $opt_solve = 1 if(defined($opt_debug));
