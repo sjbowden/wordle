@@ -165,7 +165,8 @@ class WordleSolver:
         score = 0
 
         for letter in word:
-            score += self.char_frequencies[letter]
+            # Use .get() to handle letters that have been removed from char_frequencies
+            score += self.char_frequencies.get(letter, 0)
             if letter in self.known_chars:
                 score += KNOWN_CHAR_BONUS
 
@@ -259,8 +260,7 @@ class WordleSolver:
             Valid guess word
         """
         while True:
-            print("\nWhich word did you try?")
-            guess = input().strip().lower()
+            guess = input("\nWhich word did you try?\n").strip().lower()
 
             if guess in self.all_words:
                 return guess
@@ -275,9 +275,8 @@ class WordleSolver:
             Valid feedback string
         """
         while True:
-            print(f"\nWhat is the result ({CORRECT_POSITION} for right place, "
-                  f"{WRONG_POSITION} for right letter, {NOT_IN_WORD} for incorrect)?")
-            feedback = input().strip()
+            feedback = input(f"\nWhat is the result ({CORRECT_POSITION} for right place, "
+                           f"{WRONG_POSITION} for right letter, {NOT_IN_WORD} for incorrect)?\n").strip()
 
             if (len(feedback) == WORD_LENGTH and
                 all(c in f'{CORRECT_POSITION}{WRONG_POSITION}{NOT_IN_WORD}' for c in feedback)):
