@@ -31,7 +31,9 @@ class WordleSolver:
     def __init__(self, answers_file: str = "answers.txt",
                  guesses_file: str = "guesses.txt",
                  debug: bool = False,
-                 solve_mode: bool = False):
+                 solve_mode: bool = False,
+                 use_information_theory: bool = False,
+                 search_all_words: bool = False):
         """
         Initialize the Wordle solver.
 
@@ -40,16 +42,20 @@ class WordleSolver:
             guesses_file: Path to file containing valid guess words
             debug: Enable debug output
             solve_mode: Show word suggestions and scores
+            use_information_theory: Use information-theoretic scoring (slower but optimal)
+            search_all_words: Consider all valid guesses, not just remaining answers
         """
         self.debug = debug
         self.solve_mode = solve_mode
+        self.use_information_theory = use_information_theory
+        self.search_all_words = search_all_words
 
         self.answers: List[str] = []
         self.all_words: List[str] = []
         self.trie: Dict = {}
         self.char_frequencies: Dict[str, int] = {}
         self.sorted_chars: List[str] = []
-        self.candidate_words: Dict[str, int] = {}
+        self.candidate_words: Dict[str, float] = {}
         self.known_chars: Set[str] = set()
 
         self._load_word_lists(answers_file, guesses_file)
@@ -129,10 +135,23 @@ class WordleSolver:
         """Find all valid words that can be formed from available letters."""
         self.candidate_words = {}
 
-        # Prioritize known characters
-        search_order = list(self.known_chars) + self.sorted_chars
+        if self.use_information_theory and self.search_all_words:
+            # When using information theory with expanded search,
+            # evaluate all valid guesses (not just remaining answers)
+            if self.debug:
+                print(f"\nEvaluating {len(self.all_words)} possible guesses...")
 
-        self._search_trie(self.trie, "", search_order)
+            for i, word in enumerate(self.all_words):
+                self.candidate_words[word] = self._calculate_word_score(word)
+
+                # Progress indicator for large searches
+                if self.debug and (i + 1) % 500 == 0:
+                    print(f"  Evaluated {i + 1}/{len(self.all_words)} words...")
+        else:
+            # Use trie-based search (original method)
+            # Prioritize known characters
+            search_order = list(self.known_chars) + self.sorted_chars
+            self._search_trie(self.trie, "", search_order)
 
     def _search_trie(self, node: Dict, current_word: str, available_chars: List[str]) -> None:
         """
@@ -152,9 +171,72 @@ class WordleSolver:
             if char in node:
                 self._search_trie(node[char], current_word + char, available_chars)
 
-    def _calculate_word_score(self, word: str) -> int:
+    def _get_feedback_pattern(self, guess: str, answer: str) -> str:
         """
-        Calculate a score for a word based on character frequency and uniqueness.
+        Simulate the feedback pattern that Wordle would give for a guess against an answer.
+
+        Args:
+            guess: The guessed word
+            answer: The actual answer word
+
+        Returns:
+            Feedback string (X=correct position, x=wrong position, .=not in word)
+        """
+        feedback = [''] * WORD_LENGTH
+        answer_chars = list(answer)
+
+        # First pass: mark correct positions (X)
+        for i in range(WORD_LENGTH):
+            if guess[i] == answer[i]:
+                feedback[i] = CORRECT_POSITION
+                answer_chars[i] = None  # Mark as used
+
+        # Second pass: mark wrong positions (x) or not in word (.)
+        for i in range(WORD_LENGTH):
+            if feedback[i] == CORRECT_POSITION:
+                continue  # Already marked
+
+            if guess[i] in answer_chars:
+                feedback[i] = WRONG_POSITION
+                # Remove first occurrence of this character
+                answer_chars[answer_chars.index(guess[i])] = None
+            else:
+                feedback[i] = NOT_IN_WORD
+
+        return ''.join(feedback)
+
+    def _calculate_expected_remaining(self, guess: str) -> float:
+        """
+        Calculate the expected number of remaining answers after making this guess.
+        Uses information theory: groups answers by feedback pattern and calculates
+        expected value. Lower is better (more information gained).
+
+        Args:
+            guess: The word to evaluate
+
+        Returns:
+            Expected number of remaining answers (lower = better guess)
+        """
+        pattern_counts: Dict[str, int] = {}
+
+        # Group remaining answers by their feedback pattern
+        for answer in self.answers:
+            pattern = self._get_feedback_pattern(guess, answer)
+            pattern_counts[pattern] = pattern_counts.get(pattern, 0) + 1
+
+        # Calculate expected value: E[remaining] = sum(count^2) / total
+        # This represents the average number of words left after getting feedback
+        total = len(self.answers)
+        if total == 0:
+            return 0.0
+
+        expected = sum(count * count for count in pattern_counts.values()) / total
+
+        return expected
+
+    def _calculate_word_score(self, word: str) -> float:
+        """
+        Calculate a score for a word based on either character frequency or information theory.
 
         Args:
             word: Word to score
@@ -162,19 +244,29 @@ class WordleSolver:
         Returns:
             Score value (higher is better)
         """
-        score = 0
+        if self.use_information_theory:
+            # Information-theoretic scoring: lower expected remaining = better
+            # We negate it so higher scores are better (for consistent sorting)
+            expected_remaining = self._calculate_expected_remaining(word)
+            # Return negative so lower expected remaining gives higher score
+            # Also subtract a small bonus if word is in remaining answers (tie-breaker)
+            bonus = 0.001 if word in self.answers else 0
+            return -expected_remaining + bonus
+        else:
+            # Frequency-based scoring (original method)
+            score = 0
 
-        for letter in word:
-            # Use .get() to handle letters that have been removed from char_frequencies
-            score += self.char_frequencies.get(letter, 0)
-            if letter in self.known_chars:
-                score += KNOWN_CHAR_BONUS
+            for letter in word:
+                # Use .get() to handle letters that have been removed from char_frequencies
+                score += self.char_frequencies.get(letter, 0)
+                if letter in self.known_chars:
+                    score += KNOWN_CHAR_BONUS
 
-        # Bonus for words with all unique letters
-        if len(set(word)) == WORD_LENGTH:
-            score += UNIQUE_LETTER_BONUS
+            # Bonus for words with all unique letters
+            if len(set(word)) == WORD_LENGTH:
+                score += UNIQUE_LETTER_BONUS
 
-        return score
+            return float(score)
 
     def prune_answers(self, guess: str, feedback: str) -> None:
         """
@@ -288,11 +380,27 @@ class WordleSolver:
         """Display suggested words and remaining answer count."""
         if self.solve_mode:
             print("\nTry one of these words:")
-            for word in sorted(self.candidate_words.keys(),
-                             key=lambda x: self.candidate_words[x]):
-                print(f"  {word}: {self.candidate_words[word]}")
+            # Sort by score (higher is better), show top suggestions
+            sorted_words = sorted(self.candidate_words.keys(),
+                                key=lambda x: self.candidate_words[x],
+                                reverse=True)
 
-        count = len(self.candidate_words)
+            # Limit display to top 20 words for readability
+            display_count = min(20, len(sorted_words))
+            for word in sorted_words[:display_count]:
+                score = self.candidate_words[word]
+                if self.use_information_theory:
+                    # For info theory, show expected remaining words
+                    expected = -score  # We negated it earlier
+                    marker = "*" if word in self.answers else " "
+                    print(f"  {word}{marker}: {expected:.2f} expected remaining")
+                else:
+                    print(f"  {word}: {score:.0f}")
+
+            if len(sorted_words) > display_count:
+                print(f"  ... and {len(sorted_words) - display_count} more")
+
+        count = len(self.answers)  # Show actual remaining answers, not candidates
         if not self.solve_mode:
             print(f"\n{count} answer{'s' if count != 1 else ''} remaining")
 
@@ -337,19 +445,31 @@ Example usage:
   %(prog)s              # Basic mode (shows answer count only)
   %(prog)s -s           # Solve mode (shows word suggestions)
   %(prog)s -d           # Debug mode (shows detailed analysis)
+  %(prog)s -i -s        # Use information-theoretic scoring (optimal but slower)
+  %(prog)s -i -a -s     # Use info theory + search all valid guesses (most optimal)
         """
     )
     parser.add_argument('-d', '--debug', action='store_true',
                        help='enable debug output')
     parser.add_argument('-s', '--solve', action='store_true',
                        help='enable solve mode (show word suggestions)')
+    parser.add_argument('-i', '--info-theory', action='store_true',
+                       help='use information-theoretic scoring (slower but optimal)')
+    parser.add_argument('-a', '--all-words', action='store_true',
+                       help='consider all valid guesses, not just remaining answers (use with -i)')
     args = parser.parse_args()
 
     # Debug mode implies solve mode
-    solve_mode = args.solve or args.debug
+    # Info theory mode implies solve mode
+    solve_mode = args.solve or args.debug or args.info_theory
 
     # Create and run solver
-    solver = WordleSolver(debug=args.debug, solve_mode=solve_mode)
+    solver = WordleSolver(
+        debug=args.debug,
+        solve_mode=solve_mode,
+        use_information_theory=args.info_theory,
+        search_all_words=args.all_words
+    )
     solver.solve()
 
 
